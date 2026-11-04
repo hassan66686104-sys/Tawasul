@@ -17,9 +17,9 @@ export function errorMessage(e: unknown): string {
   const anyE = e as { message?: string; error_description?: string } | null
   const msg = anyE?.message || anyE?.error_description || String(e ?? '')
   const map: Record<string, string> = {
-    'Invalid login credentials': 'البريد الإلكتروني أو كلمة المرور غير صحيحة',
+    'Invalid login credentials': 'رمز المرور غير صحيح',
     'Email not confirmed': 'لم يتم تأكيد البريد الإلكتروني بعد، افتح رسالة التأكيد في بريدك',
-    'User already registered': 'هذا البريد مسجّل مسبقًا، سجّل الدخول بدلًا من ذلك',
+    'User already registered': 'هذا الرمز مستخدم مسبقًا، اختر رمزًا آخر أو ادخل به',
     'Failed to fetch': 'تعذّر الاتصال بالخادم، تحقق من الإنترنت',
     'Password should be at least 6 characters.': 'كلمة المرور يجب أن تكون 6 أحرف على الأقل',
   }

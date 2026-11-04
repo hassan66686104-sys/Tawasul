@@ -12,7 +12,7 @@ import { SharePanel } from '../components/SharePanel'
 import { useInstallPrompt } from '../lib/pwa'
 
 export default function Dashboard() {
-  const { teacherName, loading: authLoading, reloadProfile, session } = useAuth()
+  const { teacherName, loading: authLoading, reloadProfile } = useAuth()
   const nav = useNavigate()
   const [rows, setRows] = useState<DashboardRow[] | null>(null)
   const [q, setQ] = useState('')
@@ -82,7 +82,7 @@ export default function Dashboard() {
           <Logo light size={36} />
           <div className="flex items-center gap-1">
             {install.canInstall && <button className="icon-btn text-white hover:bg-white/10" onClick={install.prompt} title="تثبيت التطبيق"><Download className="h-5 w-5" /></button>}
-            <button className="hidden items-center gap-2 rounded-full px-3 py-1.5 text-sm hover:bg-white/10 sm:flex" onClick={() => setProfileOpen(true)}><UserCog className="h-4 w-4" />{teacherName || session?.user.email}</button>
+            <button className="hidden items-center gap-2 rounded-full px-3 py-1.5 text-sm hover:bg-white/10 sm:flex" onClick={() => setProfileOpen(true)}><UserCog className="h-4 w-4" />{teacherName || 'حسابي'}</button>
             <button className="icon-btn text-white hover:bg-white/10 sm:hidden" onClick={() => setProfileOpen(true)} aria-label="الملف الشخصي"><UserCog className="h-5 w-5" /></button>
             <button className="icon-btn text-white hover:bg-white/10" onClick={async () => { await supabase.auth.signOut(); nav('/') }} aria-label="تسجيل الخروج" title="تسجيل الخروج"><LogOut className="h-5 w-5" /></button>
           </div>

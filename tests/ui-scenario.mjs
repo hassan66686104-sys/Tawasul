@@ -112,6 +112,8 @@ async function handle(route) {
   if (method === 'OPTIONS') return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' } })
   try {
     if (path === '/auth/v1/token') {
+      const b = body()
+      if (b.password !== 'tw#12345678' || !/^t[0-9a-f]{40}@teachers\.tawasul\.invalid$/.test(b.email || '')) return json({ error: 'invalid_grant', error_description: 'Invalid login credentials' }, 400)
       const user = { id: UID, aud: 'authenticated', role: 'authenticated', email: 'teacher@school.test', user_metadata: { tw_display_name: 'أ. حسن' }, app_metadata: {} }
       return json({ access_token: 'teacher-token', token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: 'r', user })
     }
@@ -166,7 +168,7 @@ try {
   // 1) المعلم يدخل حسابه
   const tctx = await ctx({ viewport: { width: 1280, height: 820 } }); const T = await tctx.newPage(); watch(T, 'teacher')
   await T.goto(`${BASE}/login`)
-  await T.fill('#em', 'teacher@school.test'); await T.fill('#pw', 'secret123')
+  await T.fill('#pc', '١٢٣٤٥٦٧٨')
   await T.click('button:has-text("دخول")')
   await T.waitForURL('**/t'); await T.getByText('مرحبًا أ. حسن').waitFor()
   step('1. المعلم يدخل إلى حسابه', true)
