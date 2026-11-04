@@ -683,3 +683,31 @@ revoke execute on function public.tw_messages_before_insert(), public.tw_message
   public.tw_participants_after(), public.tw_reports_after(), public.tw_roster_before(), public.tw_touch()
   from public, anon, authenticated;
 revoke execute on function public.tw_storage_is_owner(text) from public, anon;
+
+-- ============================================================
+-- معلم واحد فقط: أول حساب معلم هو الوحيد المسموح به
+-- ============================================================
+create or replace function public.tw_teachers_single() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from public.tw_teachers where id <> new.id) then
+    raise exception 'tw_single_teacher' using errcode = '42501';
+  end if;
+  return new;
+end $$;
+revoke execute on function public.tw_teachers_single() from public, anon, authenticated;
+drop trigger if exists tw_teachers_single on public.tw_teachers;
+create trigger tw_teachers_single before insert on public.tw_teachers
+  for each row execute function public.tw_teachers_single();
+
+create or replace function public.tw_is_teacher() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.tw_teachers where id = auth.uid())
+$$;
+revoke execute on function public.tw_is_teacher() from public, anon;
+grant execute on function public.tw_is_teacher() to authenticated;
+
+drop policy if exists tw_conv_owner on public.tw_conversations;
+create policy tw_conv_owner on public.tw_conversations for all to authenticated
+  using (owner_id = auth.uid() and public.tw_is_teacher())
+  with check (owner_id = auth.uid() and public.tw_is_teacher());

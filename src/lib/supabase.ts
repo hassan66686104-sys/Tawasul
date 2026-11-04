@@ -1,7 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+// القيم الافتراضية: رابط المشروع والمفتاح العام فقط (ليست أسرارًا؛ الحماية في RLS)
+const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined) || 'https://pqkaotqtwdaoolbjzpyk.supabase.co'
+const key = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) || 'sb_publishable_6TUp8IMl-Br4lmWOxZ-JHQ_hVFHr85v'
 
 export const isConfigured = Boolean(url && key)
 

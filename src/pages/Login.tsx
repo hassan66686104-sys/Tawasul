@@ -32,8 +32,10 @@ export default function Login() {
     try {
       const cred = await passcodeCredentials(c)
       if (mode === 'login') {
-        const { error } = await supabase.auth.signInWithPassword(cred)
+        const { data: li, error } = await supabase.auth.signInWithPassword(cred)
         if (error) throw error
+        const { data: prof } = await supabase.from('tw_teachers').select('id').eq('id', li.user.id).maybeSingle()
+        if (!prof) { await supabase.auth.signOut(); throw new Error('Invalid login credentials') }
         nav('/t')
       } else {
         const { data, error } = await supabase.auth.signUp({ ...cred, options: { data: { tw_display_name: name.trim() } } })
@@ -90,7 +92,7 @@ export default function Login() {
           </button>
           <div className="flex flex-col items-center gap-2 text-sm">
             {mode === 'login'
-              ? <button type="button" className="font-semibold text-navy-600 hover:underline" onClick={() => { setMode('signup'); setErr(null) }}>أول مرة؟ أنشئ حساب معلم</button>
+              ? null
               : <button type="button" className="flex items-center gap-1 font-semibold text-navy-600 hover:underline" onClick={() => { setMode('login'); setErr(null) }}><ArrowRight className="h-4 w-4" /> لديّ رمز، العودة للدخول</button>}
           </div>
         </form>
