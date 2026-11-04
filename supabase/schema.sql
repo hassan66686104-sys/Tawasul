@@ -677,3 +677,9 @@ create policy "tw images upload" on storage.objects for insert to anon, authenti
 drop policy if exists "tw images delete" on storage.objects;
 create policy "tw images delete" on storage.objects for delete to authenticated
   using (bucket_id = 'tw-images' and public.tw_storage_is_owner(name));
+
+-- تقليل الصلاحيات: دوال المشغّلات والدوال الداخلية لا تُستدعى مباشرة
+revoke execute on function public.tw_messages_before_insert(), public.tw_messages_after(), public.tw_conversations_after(),
+  public.tw_participants_after(), public.tw_reports_after(), public.tw_roster_before(), public.tw_touch()
+  from public, anon, authenticated;
+revoke execute on function public.tw_storage_is_owner(text) from public, anon;
