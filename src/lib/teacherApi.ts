@@ -1,5 +1,5 @@
 import { supabase, BUCKET } from './supabase'
-import type { ConversationRow, DashboardRow, MessageRow, Msg, ParticipantRow, ReportRow, RosterRow, AccessMode } from './types'
+import type { ConversationRow, DashboardRow, MessageRow, Msg, ParticipantRow, ReportRow, RosterRow, AccessMode, ReactionRow, VoteRow, BoardRow, TemplateRow, TemplateItem } from './types'
 
 function check<T>(r: { data: T | null; error: unknown }): T {
   if (r.error) throw r.error
@@ -11,7 +11,7 @@ export async function dashboard(): Promise<DashboardRow[]> {
 }
 
 export async function createConversation(input: {
-  title: string; description?: string | null; grade?: string | null; access_mode: AccessMode; expires_at?: string | null
+  title: string; description?: string | null; grade?: string | null; access_mode: AccessMode; expires_at?: string | null; template_id?: string | null
 }): Promise<ConversationRow> {
   return check(await supabase.from('tw_conversations').insert(input).select('*').single())
 }
@@ -21,7 +21,7 @@ export async function getConversation(id: string): Promise<ConversationRow> {
 }
 
 export async function updateConversation(id: string, patch: Partial<Pick<ConversationRow,
-  'title' | 'description' | 'grade' | 'access_mode' | 'is_closed' | 'is_archived' | 'expires_at' | 'teacher_last_read_at'>>) {
+  'title' | 'description' | 'grade' | 'access_mode' | 'is_closed' | 'is_archived' | 'expires_at' | 'teacher_last_read_at' | 'hide_answers' | 'template_id'>>) {
   check(await supabase.from('tw_conversations').update(patch).eq('id', id).select('id'))
 }
 
@@ -56,7 +56,8 @@ export async function resolveReports(messageId: string) {
   check(await supabase.from('tw_reports').update({ resolved: true }).eq('message_id', messageId).select('id'))
 }
 
-export async function sendTeacherMessage(input: { conversation_id: string; body: string | null; image_path?: string | null; reply_to?: string | null; is_announcement?: boolean }) {
+export async function sendTeacherMessage(input: { conversation_id: string; body: string | null; image_path?: string | null; reply_to?: string | null; is_announcement?: boolean
+  kind?: 'text' | 'poll' | 'voice'; poll_options?: string[] | null; audio_path?: string | null; audio_secs?: number | null }) {
   return check(await supabase.from('tw_messages').insert({ ...input, sender_role: 'teacher' }).select('*').single()) as MessageRow
 }
 
@@ -98,7 +99,34 @@ export function normalize(s: string) {
     .replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي').toLowerCase()
 }
 
-export function rowToMsg(r: MessageRow, byId: Map<string, MessageRow>, reportCounts?: Map<string, number>): Msg {
+export async function reactions(convId: string): Promise<ReactionRow[]> {
+  return check(await supabase.from('tw_reactions').select('message_id, participant_id, actor, emoji').eq('conversation_id', convId).limit(10000)) as ReactionRow[]
+}
+export async function votes(convId: string): Promise<VoteRow[]> {
+  return check(await supabase.from('tw_votes').select('message_id, participant_id, option').eq('conversation_id', convId).limit(10000)) as VoteRow[]
+}
+export async function toggleReaction(messageId: string, emoji: string, has: boolean) {
+  if (has) check(await supabase.from('tw_reactions').delete().eq('message_id', messageId).eq('actor', 'teacher').eq('emoji', emoji).select('message_id'))
+  else check(await supabase.from('tw_reactions').insert({ message_id: messageId, emoji }).select('message_id'))
+}
+export async function board(convId: string): Promise<BoardRow[]> {
+  return check(await supabase.rpc('tw_board_teacher', { p_conv: convId })) as BoardRow[]
+}
+export async function templates(): Promise<TemplateRow[]> {
+  return check(await supabase.from('tw_templates').select('*').order('updated_at', { ascending: false })) as TemplateRow[]
+}
+export async function saveTemplate(t: { id?: string; title: string; description: string | null; grade: string | null; items: TemplateItem[] }) {
+  const row = { title: t.title, description: t.description, grade: t.grade, items: t.items }
+  if (t.id) return check(await supabase.from('tw_templates').update(row).eq('id', t.id).select('*').single()) as TemplateRow
+  return check(await supabase.from('tw_templates').insert(row).select('*').single()) as TemplateRow
+}
+export async function deleteTemplate(id: string) {
+  check(await supabase.from('tw_templates').delete().eq('id', id).select('id'))
+}
+
+export interface Extras { reactions?: ReactionRow[]; votes?: VoteRow[]; names?: Map<string, string> }
+
+export function rowToMsg(r: MessageRow, byId: Map<string, MessageRow>, reportCounts?: Map<string, number>, extras?: Extras): Msg {
   const rep = r.reply_to ? byId.get(r.reply_to) : undefined
   if (r.deleted_at) {
     return { id: r.id, role: r.sender_role, participant_id: r.participant_id, name: r.sender_name, deleted: true, deleted_by: r.deleted_by,
@@ -110,5 +138,24 @@ export function rowToMsg(r: MessageRow, byId: Map<string, MessageRow>, reportCou
     reply: rep ? { id: rep.id, name: rep.sender_name, body: rep.deleted_at ? null : rep.body?.slice(0, 140), has_image: !!rep.image_path && !rep.deleted_at } : null,
     is_announcement: r.is_announcement, is_pinned: r.is_pinned, is_featured: r.is_featured, deleted: false,
     created_at: r.created_at, updated_at: r.updated_at, mine: r.sender_role === 'teacher', report_count: reportCounts?.get(r.id) || 0,
+    kind: r.kind || 'text', audio_path: r.audio_path, audio_secs: r.audio_secs,
+    ...reactionInfo(r.id, extras),
+    poll: r.kind === 'poll' && r.poll_options ? pollInfo(r, extras) : null,
   }
+}
+
+function reactionInfo(id: string, extras?: Extras) {
+  const list = (extras?.reactions || []).filter((x) => x.message_id === id)
+  const reactions: Record<string, number> = {}
+  list.forEach((x) => { reactions[x.emoji] = (reactions[x.emoji] || 0) + 1 })
+  const teacher_reactions = list.filter((x) => x.actor === 'teacher').map((x) => x.emoji)
+  return { reactions, teacher_reactions, my_reactions: teacher_reactions }
+}
+
+function pollInfo(r: MessageRow, extras?: Extras) {
+  const opts = r.poll_options || []
+  const vs = (extras?.votes || []).filter((v) => v.message_id === r.id)
+  const counts = opts.map((_, i) => vs.filter((v) => v.option === i).length)
+  const voters = opts.map((_, i) => vs.filter((v) => v.option === i).map((v) => ({ name: extras?.names?.get(v.participant_id) || 'طالب', option: i })))
+  return { options: opts, total: vs.length, counts, voters, my_vote: null }
 }

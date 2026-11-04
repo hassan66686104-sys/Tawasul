@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowRight, Users, Search, Share2, Lock, Unlock, MoreVertical, FileDown, FileSpreadsheet, Archive, ArchiveRestore, Settings, X, Images, ShieldAlert, Ban, CheckCircle2, KeyRound, Trash2, RefreshCw, Printer, Wifi, WifiOff, MessageCircle } from 'lucide-react'
+import { ArrowRight, Users, Search, Share2, Lock, Unlock, MoreVertical, FileDown, FileSpreadsheet, Archive, ArchiveRestore, Settings, X, Images, ShieldAlert, Ban, CheckCircle2, KeyRound, Trash2, RefreshCw, Printer, Wifi, WifiOff, MessageCircle, Eye, EyeOff, Trophy, ListChecks, BookmarkPlus, Send, BarChart3 } from 'lucide-react'
 import { ChatView, MsgAction, SignedImage } from '../components/ChatView'
 import { Composer, SendPayload } from '../components/Composer'
 import { Lightbox, LightboxItem } from '../components/Lightbox'
@@ -8,12 +8,13 @@ import { SharePanel } from '../components/SharePanel'
 import { confirmDialog, Empty, FullLoader, Modal, Spinner, StatusBadge, toast } from '../components/ui'
 import * as api from '../lib/teacherApi'
 import { useConversationSync } from '../lib/sync'
-import { downloadImage, uploadImage } from '../lib/media'
+import { downloadImage, uploadAudio, uploadImage } from '../lib/media'
+import { BoardList } from '../components/Extras'
 import { exportExcel } from '../lib/exporter'
 import { errorMessage } from '../lib/supabase'
 import { ACCESS_LABEL, fmtDateTime, relative, uuid } from '../lib/format'
 import { GRADES } from '../components/NewConversation'
-import type { ConversationRow, MessageRow, Msg, ParticipantRow, ReportRow, RosterRow, AccessMode } from '../lib/types'
+import type { ConversationRow, MessageRow, Msg, ParticipantRow, ReportRow, RosterRow, AccessMode, ReactionRow, VoteRow, BoardRow, TemplateRow, TemplateItem } from '../lib/types'
 
 function statusOf(c: ConversationRow) {
   if (c.is_archived) return 'archived'
@@ -29,12 +30,15 @@ export default function TeacherRoom() {
   const [rows, setRows] = useState<Map<string, MessageRow>>(new Map())
   const [parts, setParts] = useState<ParticipantRow[]>([])
   const [reps, setReps] = useState<ReportRow[]>([])
+  const [reacts, setReacts] = useState<ReactionRow[]>([])
+  const [votes, setVotes] = useState<VoteRow[]>([])
+  const [boardRows, setBoardRows] = useState<BoardRow[] | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState<Msg | null>(null)
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const [panel, setPanel] = useState<null | 'students' | 'images' | 'reports' | 'settings'>(null)
+  const [panel, setPanel] = useState<null | 'students' | 'images' | 'reports' | 'settings' | 'board' | 'ready'>(null)
   const [shareOpen, setShareOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -63,9 +67,10 @@ export default function TeacherRoom() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [c, m, p, r] = await Promise.all([api.getConversation(id), api.messagesSince(id, null), api.participants(id), api.reports(id)])
+      const [c, m, p, r, rx, vx] = await Promise.all([api.getConversation(id), api.messagesSince(id, null), api.participants(id), api.reports(id),
+        api.reactions(id).catch(() => []), api.votes(id).catch(() => [])])
       if (!unreadAfter.current) unreadAfter.current = c.teacher_last_read_at
-      setConv(c); setParts(p); setReps(r)
+      setConv(c); setParts(p); setReps(r); setReacts(rx); setVotes(vx)
       setRows(new Map(m.map((x) => [x.id, x])))
       since.current = null
       mergeRows(m)
@@ -76,7 +81,10 @@ export default function TeacherRoom() {
 
   const onSignal = useCallback(async (kind: string) => {
     try {
-      if (kind === 'msg' || kind === 'all') { mergeRows(await api.messagesSince(id, since.current)); markRead() }
+      if (kind === 'msg' || kind === 'all') {
+        const [m, rx, vx] = await Promise.all([api.messagesSince(id, since.current), api.reactions(id).catch(() => null), api.votes(id).catch(() => null)])
+        mergeRows(m); if (rx) setReacts(rx); if (vx) setVotes(vx); markRead()
+      }
       if (kind === 'participant' || kind === 'all') setParts(await api.participants(id))
       if (kind === 'report' || kind === 'all') setReps(await api.reports(id))
       if (kind === 'conv' || kind === 'all') setConv(await api.getConversation(id))
@@ -91,8 +99,11 @@ export default function TeacherRoom() {
   }, [reps])
   const messages = useMemo(() => {
     const list = [...rows.values()].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
-    return list.map((r) => api.rowToMsg(r, rows, reportCounts))
-  }, [rows, reportCounts])
+    const names = new Map(parts.map((p) => [p.id, p.name]))
+    return list.map((r) => api.rowToMsg(r, rows, reportCounts, { reactions: reacts, votes, names }))
+  }, [rows, reportCounts, reacts, votes, parts])
+  const refreshBoard = useCallback(async () => { try { setBoardRows(await api.board(id)) } catch { setBoardRows([]) } }, [id])
+  useEffect(() => { if (panel === 'board') refreshBoard() }, [panel, refreshBoard, reacts, votes, rows])
   const shown = useMemo(() => {
     const s = query.trim().toLowerCase()
     if (!s) return messages
@@ -109,14 +120,54 @@ export default function TeacherRoom() {
   if (!conv) return <FullLoader text="جارٍ تحميل المحادثة…" />
   const status = statusOf(conv)
 
-  const send = async ({ text, image, replyTo: rt, announcement }: SendPayload) => {
+  const send = async ({ text, image, replyTo: rt, announcement, audio }: SendPayload) => {
     let image_path: string | null = null
+    let audio_path: string | null = null
     if (image) {
       image_path = `${conv.secret_key}/teacher/${uuid()}.${image.ext}`
       await uploadImage(image_path, image.blob, image.type)
     }
-    const row = await api.sendTeacherMessage({ conversation_id: conv.id, body: text || null, image_path, reply_to: rt?.id || null, is_announcement: announcement })
+    if (audio) {
+      audio_path = `${conv.secret_key}/teacher/${uuid()}.${audio.ext}`
+      await uploadAudio(audio_path, audio.blob, audio.type)
+    }
+    const row = await api.sendTeacherMessage({ conversation_id: conv.id, body: text || null, image_path, reply_to: rt?.id || null, is_announcement: announcement,
+      ...(audio_path ? { kind: 'voice' as const, audio_path, audio_secs: audio!.secs } : {}) })
     mergeRows([row])
+  }
+  const sendPoll = async (question: string, options: string[]) => {
+    const row = await api.sendTeacherMessage({ conversation_id: conv.id, body: question, kind: 'poll', poll_options: options })
+    mergeRows([row]); toast.ok('أُرسل السؤال للطلاب')
+  }
+  const sendItem = async (it: TemplateItem) => {
+    try {
+      if (it.type === 'poll' && it.options && it.options.length >= 2) await sendPoll(it.body, it.options)
+      else { mergeRows([await api.sendTeacherMessage({ conversation_id: conv.id, body: it.body, is_announcement: true })]); toast.ok('أُرسل للطلاب') }
+    } catch (e) { toast.err(errorMessage(e)) }
+  }
+  const onReact = async (m: Msg, emoji: string) => {
+    try { await api.toggleReaction(m.id, emoji, !!m.teacher_reactions?.includes(emoji)); onSignal('msg') } catch (e) { toast.err(errorMessage(e)) }
+  }
+  const toggleHidden = async () => {
+    const next = !conv.hide_answers
+    try {
+      await api.updateConversation(conv.id, { hide_answers: next })
+      toast.ok(next ? 'الإجابات مخفية الآن: كل طالب يرى رسائله فقط' : 'كُشفت الإجابات للجميع')
+      onSignal('conv')
+    } catch (e) { toast.err(errorMessage(e)) }
+  }
+  const saveAsTemplate = async () => {
+    setMenuOpen(false)
+    const items: TemplateItem[] = [...rows.values()].sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .filter((r) => r.sender_role === 'teacher' && !r.deleted_at && r.body && (r.kind === 'poll' || r.is_announcement))
+      .slice(0, 40)
+      .map((r) => (r.kind === 'poll' ? { type: 'poll' as const, body: r.body!, options: r.poll_options || [] } : { type: 'text' as const, body: r.body! }))
+    try {
+      const t = await api.saveTemplate({ title: conv.title, description: conv.description, grade: conv.grade, items })
+      if (!conv.template_id) await api.updateConversation(conv.id, { template_id: t.id })
+      toast.ok(items.length ? `حُفظ القالب مع ${items.length} سؤال/إعلان` : 'حُفظ القالب (أضف أسئلة من «القوالب» في اللوحة)')
+      onSignal('conv')
+    } catch (e) { toast.err(errorMessage(e)) }
   }
 
   const onAction = async (a: MsgAction, m: Msg) => {
@@ -173,9 +224,11 @@ export default function TeacherRoom() {
       )}
       {panel === 'reports' && <ReportsPanel reps={reps} messages={messages} onAction={onAction} onResolved={() => onSignal('report')} />}
       {panel === 'settings' && <SettingsPanel conv={conv} onSaved={() => onSignal('conv')} />}
+      {panel === 'board' && <BoardList rows={boardRows} />}
+      {panel === 'ready' && <ReadyPanel conv={conv} onSend={sendItem} onChanged={() => onSignal('conv')} />}
     </>
   )
-  const panelTitle = { students: `الطلاب المشاركون (${parts.length})`, images: `الصور المرسلة (${images.length})`, reports: `البلاغات (${reps.length})`, settings: 'إعدادات المحادثة والطلاب' }
+  const panelTitle = { students: `الطلاب المشاركون (${parts.length})`, images: `الصور المرسلة (${images.length})`, reports: `البلاغات (${reps.length})`, settings: 'إعدادات المحادثة والطلاب', board: 'لوحة الشرف 🏆', ready: 'الأسئلة الجاهزة' }
 
   return (
     <div className="flex h-[100dvh] flex-col">
@@ -188,6 +241,10 @@ export default function TeacherRoom() {
               <Users className="h-3.5 w-3.5" /> {activeCount} طالب مشارك
               {syncState === 'live' ? <span className="flex items-center gap-1 text-mint-200"><Wifi className="h-3 w-3" /> مباشر</span> : <span className="flex items-center gap-1 text-gold-200"><WifiOff className="h-3 w-3" /> تحديث دوري</span>}
             </div>
+          </button>
+          <button className={`icon-btn hover:bg-white/10 ${conv.hide_answers ? 'bg-gold-400 text-navy-950 hover:bg-gold-300' : 'text-white'}`} onClick={toggleHidden}
+            aria-label={conv.hide_answers ? 'كشف الإجابات للجميع' : 'إخفاء إجابات الطلاب عن بعضهم'} title={conv.hide_answers ? 'كشف الإجابات للجميع' : 'إخفاء إجابات الطلاب عن بعضهم'}>
+            {conv.hide_answers ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
           </button>
           <button className="icon-btn text-white hover:bg-white/10" onClick={() => { setSearchOpen((s) => !s); setQuery('') }} aria-label="بحث في الرسائل"><Search className="h-5 w-5" /></button>
           <button className="icon-btn text-white hover:bg-white/10" onClick={() => setShareOpen(true)} aria-label="مشاركة الرابط"><Share2 className="h-5 w-5" /></button>
@@ -203,6 +260,8 @@ export default function TeacherRoom() {
         </div>
         <div className="scrollbar-thin flex gap-1.5 overflow-x-auto px-3 pb-2 text-sm">
           <Tab active={panel === 'students'} onClick={() => setPanel(panel === 'students' ? null : 'students')} icon={<Users className="h-4 w-4" />} label={`الطلاب ${parts.length}`} />
+          <Tab active={panel === 'board'} onClick={() => setPanel(panel === 'board' ? null : 'board')} icon={<Trophy className="h-4 w-4" />} label="لوحة الشرف" />
+          <Tab active={panel === 'ready'} onClick={() => setPanel(panel === 'ready' ? null : 'ready')} icon={<ListChecks className="h-4 w-4" />} label="أسئلة جاهزة" />
           <Tab active={panel === 'images'} onClick={() => setPanel(panel === 'images' ? null : 'images')} icon={<Images className="h-4 w-4" />} label={`الصور ${images.length}`} />
           <Tab active={panel === 'reports'} onClick={() => setPanel(panel === 'reports' ? null : 'reports')} icon={<ShieldAlert className="h-4 w-4" />} label={`البلاغات ${reps.length}`} alert={reps.length > 0} />
           <Tab active={panel === 'settings'} onClick={() => setPanel(panel === 'settings' ? null : 'settings')} icon={<Settings className="h-4 w-4" />} label="الإعدادات والرموز" />
@@ -219,10 +278,11 @@ export default function TeacherRoom() {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <ChatView messages={shown} viewer="teacher" onAction={onAction} onOpenImage={openImage} unreadAfter={query ? null : unreadAfter.current} query={query}
+          <ChatView messages={shown} viewer="teacher" onAction={onAction} onOpenImage={openImage} onReact={onReact}
+            banner={conv.hide_answers ? <div className="flex items-center gap-2 border-b border-gold-200 bg-gold-50 px-4 py-2 text-sm font-semibold text-navy-800"><EyeOff className="h-4 w-4 text-gold-600" /> الإجابات مخفية: كل طالب يرى رسائله ورسائلك فقط.<button className="ms-auto font-bold text-navy-700 underline" onClick={toggleHidden}>كشف الإجابات</button></div> : null} unreadAfter={query ? null : unreadAfter.current} query={query}
             emptyState={<Empty icon={<MessageCircle className="h-8 w-8" />} title={query ? 'لا توجد نتائج' : 'لا توجد رسائل بعد'} text={query ? undefined : 'شارك رابط المحادثة مع طلابك، وستظهر رسائلهم هنا فورًا.'}
               action={!query && <button className="btn-gold" onClick={() => setShareOpen(true)}><Share2 className="h-5 w-5" /> مشاركة الرابط</button>} />} />
-          <Composer teacher onSend={send} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
+          <Composer teacher onSend={send} onPoll={sendPoll} replyTo={replyTo} onCancelReply={() => setReplyTo(null)}
             disabledReason={conv.is_archived ? 'المحادثة مؤرشفة. ألغِ الأرشفة لإرسال رسائل.' : null} />
         </div>
         {panel && (
@@ -243,6 +303,7 @@ export default function TeacherRoom() {
         <div className="flex flex-col pb-2">
           <MenuBtn icon={<FileDown />} label="تصدير PDF (طباعة / حفظ)" onClick={() => { setMenuOpen(false); nav(`/t/c/${conv.id}/export`) }} />
           <MenuBtn icon={<FileSpreadsheet />} label="تصدير Excel" onClick={doExcel} />
+          <MenuBtn icon={<BookmarkPlus />} label="حفظ هذه المحادثة كقالب" onClick={saveAsTemplate} />
           <MenuBtn icon={<Settings />} label="الإعدادات وقائمة الطلاب والرموز" onClick={() => { setMenuOpen(false); setPanel('settings') }} />
           <MenuBtn icon={<ShieldAlert />} label={`البلاغات (${reps.length})`} onClick={() => { setMenuOpen(false); setPanel('reports') }} />
           <MenuBtn icon={<RefreshCw />} label="تحديث" onClick={() => { setMenuOpen(false); loadAll() }} />
@@ -403,4 +464,45 @@ function toLocalInput(iso: string) {
   const d = new Date(iso)
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function ReadyPanel({ conv, onSend, onChanged }: { conv: ConversationRow; onSend: (it: TemplateItem) => Promise<void>; onChanged: () => void }) {
+  const [list, setList] = useState<TemplateRow[] | null>(null)
+  const [sent, setSent] = useState<Set<number>>(new Set())
+  const [busy, setBusy] = useState<number | null>(null)
+  useEffect(() => { api.templates().then(setList).catch(() => setList([])) }, [])
+  if (!list) return <Spinner className="mx-auto h-6 w-6" />
+  const tpl = list.find((t) => t.id === conv.template_id)
+  const choose = async (tid: string) => {
+    try { await api.updateConversation(conv.id, { template_id: tid || null }); setSent(new Set()); onChanged() } catch (e) { toast.err(errorMessage(e)) }
+  }
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="label">القالب المرتبط بهذه المحادثة</label>
+        <select className="input" value={conv.template_id || ''} onChange={(e) => choose(e.target.value)}>
+          <option value="">— بدون قالب —</option>
+          {list.map((t) => <option key={t.id} value={t.id}>{t.title} ({t.items.length})</option>)}
+        </select>
+        {!list.length && <p className="mt-2 text-xs leading-5 text-navy-500">لا توجد قوالب بعد. أنشئ قالبًا من زر «القوالب» في اللوحة الرئيسية، أو احفظ هذه المحادثة كقالب من القائمة ⋮.</p>}
+      </div>
+      {tpl && (tpl.items.length === 0 ? <p className="text-center text-sm text-navy-400">القالب لا يحتوي أسئلة بعد.</p> : (
+        <ul className="space-y-2">
+          {tpl.items.map((it, i) => (
+            <li key={i} className={`rounded-2xl border p-3 ${sent.has(i) ? 'border-mint-200 bg-mint-50/50' : 'border-navy-100'}`}>
+              <div className="mb-1 flex items-center gap-1.5 text-xs font-bold text-navy-500">
+                {it.type === 'poll' ? <><BarChart3 className="h-3.5 w-3.5" /> سؤال باختيارات</> : <><MessageCircle className="h-3.5 w-3.5" /> سؤال / إعلان</>}
+              </div>
+              <p className="whitespace-pre-wrap text-sm font-semibold" dir="auto">{it.body}</p>
+              {it.type === 'poll' && <p className="mt-1 text-xs text-navy-500">{(it.options || []).join(' · ')}</p>}
+              <button className={`mt-2 w-full ${sent.has(i) ? 'btn-outline' : 'btn-primary'} py-2 text-sm`} disabled={busy !== null}
+                onClick={async () => { setBusy(i); await onSend(it); setSent(new Set([...sent, i])); setBusy(null) }}>
+                {busy === i ? <Spinner className="h-4 w-4" /> : <Send className="h-4 w-4 -scale-x-100" />} {sent.has(i) ? 'أُرسل ✓ (إرسال مرة أخرى)' : 'إرسال للطلاب'}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ))}
+    </div>
+  )
 }

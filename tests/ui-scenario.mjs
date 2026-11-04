@@ -13,21 +13,27 @@ mkdirSync(OUT, { recursive: true })
 
 // ---------------- خادم Supabase مُحاكى ----------------
 const UID = randomUUID()
-const db = { teachers: [], convs: [], parts: [], roster: [], msgs: [], reports: [], tokens: new Map(), objects: new Map() }
+const db = { teachers: [{ id: UID, display_name: 'أ. حسن', created_at: new Date().toISOString() }], convs: [], parts: [], roster: [], msgs: [], reports: [], votes: [], reactions: [], templates: [], tokens: new Map(), objects: new Map() }
 const now = () => new Date().toISOString()
 let tick = 0
 const ts = () => new Date(Date.now() + (tick++)).toISOString()
 const norm = (s) => s.trim().replace(/\s+/g, ' ').replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').toLowerCase()
 const status = (c) => c.is_archived ? 'archived' : c.is_closed ? 'closed' : c.expires_at && new Date(c.expires_at) <= new Date() ? 'expired' : 'open'
 const teacherName = (c) => db.teachers.find((t) => t.id === c.owner_id)?.display_name || 'المعلم'
-const convJson = (c) => ({ id: c.id, title: c.title, description: c.description, grade: c.grade, access_mode: c.access_mode, status: status(c), expires_at: c.expires_at,
+const convJson = (c) => ({ id: c.id, title: c.title, description: c.description, grade: c.grade, access_mode: c.access_mode, status: status(c), expires_at: c.expires_at, hide_answers: !!c.hide_answers,
   teacher_name: teacherName(c), participant_count: db.parts.filter((p) => p.conversation_id === c.id && !p.is_blocked).length, created_at: c.created_at })
-const msgJson = (m, viewer) => {
+const bump = (id) => { const m = db.msgs.find((x) => x.id === id); if (m) m.updated_at = ts() }
+const msgJson = (m, viewer, hide = false) => {
   const r = m.reply_to && db.msgs.find((x) => x.id === m.reply_to)
+  const rx = db.reactions.filter((x) => x.message_id === m.id); const reactions = {}; rx.forEach((x) => { reactions[x.emoji] = (reactions[x.emoji] || 0) + 1 })
+  const vs = db.votes.filter((v) => v.message_id === m.id); const mv = vs.find((v) => v.participant_id === viewer)
+  const extra = { kind: m.kind || 'text', audio_path: m.audio_path || null, audio_secs: m.audio_secs || null, reactions,
+    my_reactions: rx.filter((x) => x.actor === viewer).map((x) => x.emoji), teacher_reactions: rx.filter((x) => x.actor === 'teacher').map((x) => x.emoji),
+    poll: m.kind === 'poll' ? { options: m.poll_options, my_vote: mv ? mv.option : null, total: vs.length, counts: mv ? m.poll_options.map((_, i) => vs.filter((v) => v.option === i).length) : null } : null }
   if (m.deleted_at) return { id: m.id, deleted: true, deleted_by: m.deleted_by, role: m.sender_role, name: m.sender_name, created_at: m.created_at, updated_at: m.updated_at, mine: m.participant_id === viewer }
   return { id: m.id, role: m.sender_role, participant_id: m.participant_id, name: m.sender_name, body: m.body, image_path: m.image_path, reply_to: m.reply_to,
-    reply: r ? { id: r.id, name: r.sender_name, body: r.body, has_image: !!r.image_path } : null, is_announcement: m.is_announcement, is_pinned: m.is_pinned,
-    is_featured: m.is_featured, deleted: false, created_at: m.created_at, updated_at: m.updated_at, mine: !!m.participant_id && m.participant_id === viewer }
+    reply: r ? (hide && r.sender_role === 'student' && r.participant_id !== viewer ? { id: r.id, name: r.sender_name, body: 'إجابة مخفية حتى يكشفها المعلم', has_image: false } : { id: r.id, name: r.sender_name, body: r.body, has_image: !!r.image_path }) : null, is_announcement: m.is_announcement, is_pinned: m.is_pinned,
+    is_featured: m.is_featured, deleted: false, created_at: m.created_at, updated_at: m.updated_at, mine: !!m.participant_id && m.participant_id === viewer, ...extra }
 }
 class PgErr extends Error { constructor(msg, code = 'P0001') { super(msg); this.code = code } }
 const auth = (token) => {
@@ -36,7 +42,8 @@ const auth = (token) => {
   return { p, c: db.convs.find((c) => c.id === p.conversation_id) }
 }
 const sessionJson = (p, c, token) => ({ token, participant: { id: p.id, name: p.name, upload_key: p.upload_key, is_blocked: p.is_blocked }, conversation: { ...convJson(c), secret_key: c.secret_key, slug: c.slug } })
-const tables = { tw_teachers: 'teachers', tw_conversations: 'convs', tw_participants: 'parts', tw_roster: 'roster', tw_messages: 'msgs', tw_reports: 'reports' }
+const tables = { tw_teachers: 'teachers', tw_conversations: 'convs', tw_participants: 'parts', tw_roster: 'roster', tw_messages: 'msgs', tw_reports: 'reports', tw_reactions: 'reactions', tw_votes: 'votes', tw_templates: 'templates' }
+const boardFor = (cid) => db.parts.filter((p) => p.conversation_id === cid).map((p) => { const ms = db.msgs.filter((m) => m.participant_id === p.id && !m.deleted_at); const f = ms.filter((m) => m.is_featured).length; const v = db.votes.filter((x) => x.participant_id === p.id).length; return { participant_id: p.id, name: p.name, featured: f, stars: 0, points: Math.min(ms.length, 20) + v + 5 * f } }).sort((a, b) => b.points - a.points)
 
 const rpc = {
   tw_conv_public: ({ p_slug }) => { const c = db.convs.find((x) => x.slug === p_slug); return c ? { title: c.title, description: c.description, grade: c.grade, access_mode: c.access_mode, status: status(c), teacher_name: teacherName(c) } : null },
@@ -58,14 +65,29 @@ const rpc = {
   tw_feed: ({ p_token, p_since }) => {
     const { p, c } = auth(p_token)
     return { server_time: now(), conversation: convJson(c), me: { id: p.id, name: p.name, is_blocked: p.is_blocked },
-      messages: db.msgs.filter((m) => m.conversation_id === c.id && (!p_since || m.updated_at > p_since)).map((m) => msgJson(m, p.id)) }
+      messages: db.msgs.filter((m) => m.conversation_id === c.id && (!p_since || m.updated_at > p_since) && (!c.hide_answers || m.sender_role === 'teacher' || m.participant_id === p.id)).map((m) => msgJson(m, p.id, !!c.hide_answers)) }
   },
-  tw_send: ({ p_token, p_body, p_image_path, p_reply_to }) => {
+  tw_vote: ({ p_token, p_message_id, p_option }) => {
+    const { p } = auth(p_token); const m = db.msgs.find((x) => x.id === p_message_id)
+    db.votes = db.votes.filter((v) => !(v.message_id === m.id && v.participant_id === p.id)); db.votes.push({ message_id: m.id, participant_id: p.id, conversation_id: m.conversation_id, option: p_option }); bump(m.id)
+    return msgJson(m, p.id)
+  },
+  tw_react: ({ p_token, p_message_id, p_emoji }) => {
+    const { p } = auth(p_token); const m = db.msgs.find((x) => x.id === p_message_id)
+    const has = db.reactions.find((r) => r.message_id === m.id && r.actor === p.id && r.emoji === p_emoji)
+    if (has) db.reactions = db.reactions.filter((r) => r !== has); else db.reactions.push({ message_id: m.id, conversation_id: m.conversation_id, participant_id: p.id, actor: p.id, emoji: p_emoji })
+    bump(m.id); return msgJson(m, p.id)
+  },
+  tw_board: ({ p_token }) => { const { c } = auth(p_token); return boardFor(c.id).slice(0, 10) },
+  tw_board_teacher: ({ p_conv }) => boardFor(p_conv),
+  tw_send: ({ p_token, p_body, p_image_path, p_reply_to, p_audio_path, p_audio_secs }) => {
     const { p, c } = auth(p_token)
     if (status(c) !== 'open') throw new PgErr('المحادثة مغلقة، لا يمكن إرسال رسائل جديدة')
     if (p_image_path && (!p_image_path.startsWith(`${c.secret_key}/${p.upload_key}/`) || !db.objects.has(p_image_path))) throw new PgErr('مسار الصورة غير صالح')
     const m = { id: randomUUID(), conversation_id: c.id, participant_id: p.id, sender_role: 'student', sender_name: p.name, body: p_body, image_path: p_image_path, reply_to: p_reply_to,
-      is_announcement: false, is_pinned: false, is_featured: false, deleted_at: null, deleted_by: null, created_at: ts(), updated_at: now() }
+      is_announcement: false, is_pinned: false, is_featured: false, deleted_at: null, deleted_by: null, created_at: ts(), updated_at: now(),
+      kind: p_audio_path ? 'voice' : 'text', audio_path: p_audio_path || null, audio_secs: p_audio_secs || null, poll_options: null }
+    if (p_audio_path && !db.objects.has(p_audio_path)) throw new PgErr('لم يكتمل رفع التسجيل')
     m.updated_at = m.created_at; db.msgs.push(m); return msgJson(m, p.id)
   },
   tw_report: ({ p_token, p_message_id }) => { const { p, c } = auth(p_token); db.reports.push({ id: randomUUID(), message_id: p_message_id, conversation_id: c.id, participant_id: p.id, reason: null, resolved: false, created_at: now() }); return null },
@@ -97,9 +119,12 @@ function applyFilters(rows, sp) {
 
 function teacherBefore(table, row) {
   if (table === 'convs') Object.assign(row, { id: randomUUID(), owner_id: UID, slug: randomBytes(5).toString('hex'), secret_key: randomUUID(), is_closed: row.is_closed ?? false, is_archived: false,
-    teacher_last_read_at: now(), is_demo: false, created_at: now(), updated_at: now(), description: row.description ?? null, grade: row.grade ?? null, expires_at: row.expires_at ?? null })
+    teacher_last_read_at: now(), is_demo: false, created_at: now(), updated_at: now(), description: row.description ?? null, grade: row.grade ?? null, expires_at: row.expires_at ?? null, hide_answers: false, template_id: row.template_id ?? null })
+  if (table === 'reactions') { const m = db.msgs.find((x) => x.id === row.message_id); Object.assign(row, { conversation_id: m.conversation_id, participant_id: null, actor: 'teacher' }); bump(m.id) }
+  if (table === 'templates') Object.assign(row, { id: randomUUID(), created_at: now(), updated_at: now(), description: row.description ?? null, grade: row.grade ?? null })
   if (table === 'msgs') Object.assign(row, { id: randomUUID(), participant_id: null, sender_name: db.teachers[0]?.display_name || 'المعلم', is_pinned: false, is_featured: false,
-    deleted_at: null, deleted_by: null, created_at: ts(), reply_to: row.reply_to ?? null, image_path: row.image_path ?? null, is_announcement: !!row.is_announcement })
+    deleted_at: null, deleted_by: null, created_at: ts(), reply_to: row.reply_to ?? null, image_path: row.image_path ?? null, is_announcement: !!row.is_announcement,
+    kind: row.kind || (row.audio_path ? 'voice' : 'text'), poll_options: row.poll_options ?? null, audio_path: row.audio_path ?? null, audio_secs: row.audio_secs ?? null })
   if (table === 'msgs') row.updated_at = row.created_at
   if (table === 'roster') Object.assign(row, { id: randomUUID(), code: String(Math.floor(100000 + Math.random() * 899999)), created_at: now() })
   return row
@@ -134,7 +159,7 @@ async function handle(route) {
         return reply(rows)
       }
       if (method === 'PATCH') { const rows = applyFilters(list, url.searchParams); const b = body(); rows.forEach((r) => Object.assign(r, b, { updated_at: now() })); if (t === 'roster' && b.code === '') rows.forEach((r) => (r.code = String(Math.floor(100000 + Math.random() * 899999)))); return reply(rows) }
-      if (method === 'DELETE') { const rows = applyFilters(list, url.searchParams); db[t] = list.filter((r) => !rows.includes(r)); return reply(rows) }
+      if (method === 'DELETE') { const rows = applyFilters(list, url.searchParams); db[t] = list.filter((r) => !rows.includes(r)); if (t === 'reactions') rows.forEach((r) => bump(r.message_id)); return reply(rows) }
     }
     if (path.startsWith('/storage/v1/object/sign/tw-images') && method === 'POST' && path === '/storage/v1/object/sign/tw-images') {
       const { paths } = body(); return json(paths.map((p) => ({ path: p, signedURL: `/object/sign/tw-images/${p}?token=t`, error: db.objects.has(p) ? null : 'not found' })))
@@ -147,9 +172,10 @@ async function handle(route) {
     if (path.startsWith('/storage/v1/object/tw-images/') && method === 'POST') {
       const p = decodeURIComponent(path.replace('/storage/v1/object/tw-images/', '')); let buf = req.postDataBuffer() || Buffer.alloc(0)
       // storage-js يرسل الصورة داخل multipart/form-data: نستخرج بايتات JPEG
+      const isAudio = /\.(webm|ogg|m4a|mp4|mp3|aac)$/.test(p)
       const a = buf.indexOf(Buffer.from([0xff, 0xd8, 0xff])), z = buf.lastIndexOf(Buffer.from([0xff, 0xd9]))
-      if (a >= 0 && z > a) buf = buf.subarray(a, z + 2)
-      db.objects.set(p, { buf, type: 'image/jpeg' }); return json({ Key: `tw-images/${p}`, Id: randomUUID() })
+      if (!isAudio && a >= 0 && z > a) buf = buf.subarray(a, z + 2)
+      db.objects.set(p, { buf, type: isAudio ? 'audio/webm' : 'image/jpeg' }); return json({ Key: `tw-images/${p}`, Id: randomUUID() })
     }
     if (path.startsWith('/storage/v1/object/tw-images') && method === 'DELETE') return json([])
     return json({ message: 'mock: unhandled ' + method + ' ' + path }, 404)
@@ -199,7 +225,7 @@ try {
   step('5. يدخل الطالب أحمد', true)
 
   // 6) محمد يدخل من جهاز آخر (كمبيوتر مع كاميرا)
-  const mctx = await ctx({ viewport: { width: 1024, height: 760 }, permissions: ['camera'] }); const M = await mctx.newPage(); watch(M, 'mohammad')
+  const mctx = await ctx({ viewport: { width: 1024, height: 760 }, permissions: ['camera', 'microphone'] }); const M = await mctx.newPage(); watch(M, 'mohammad')
   await M.goto(link); await M.fill('#sn', 'محمد'); await M.click('button:has-text("الدخول إلى المحادثة")')
   await M.getByText('أهلًا محمد').waitFor()
   // محاولة انتحال اسم أحمد
@@ -251,6 +277,56 @@ try {
   await T.screenshot({ path: `${OUT}/10-teacher-replied.png` })
   await A.screenshot({ path: `${OUT}/11-ahmad-sees-reply-iphone.png` })
   await M.screenshot({ path: `${OUT}/12-mohammad-sees-reply.png` })
+
+  // سؤال سريع / تصويت
+  await T.click('button:has-text("سؤال سريع")'); await T.fill('[role=dialog] textarea', 'هل التوكل يعني ترك الأسباب؟')
+  const opts = T.locator('[role=dialog] input[placeholder^="الاختيار"]'); await opts.nth(0).fill('نعم'); await opts.nth(1).fill('لا، نأخذ بالأسباب')
+  await T.click('button:has-text("إرسال السؤال للطلاب")')
+  await A.getByText('هل التوكل يعني ترك الأسباب؟').waitFor({ timeout: 12000 })
+  await A.click('button:has-text("لا، نأخذ بالأسباب")'); await A.getByText('1 · 100%').waitFor({ timeout: 8000 })
+  await T.getByText('1 · 100%').waitFor({ timeout: 12000 })
+  step('سؤال سريع: المعلم يسأل، أحمد يصوّت، والنتيجة تظهر للمعلم لحظيًا', true)
+  await A.screenshot({ path: `${OUT}/16-poll-iphone.png` })
+
+  // تفاعل سريع: أحمد يضع 👍 على رد المعلم، والمعلم يضع ⭐ على إجابة أحمد
+  const ab = A.locator('[id^="m-"]:has-text("أحسنت يا أحمد")').first(); await ab.locator('button[aria-label="خيارات الرسالة"]').click()
+  await A.click('button[aria-label="تفاعل 👍"]'); await ab.locator('button:has-text("👍")').waitFor({ timeout: 8000 })
+  const tb = T.locator('[id^="m-"]:has-text("التوكل هو الاعتماد")').first(); await tb.hover(); await tb.locator('button[aria-label="خيارات الرسالة"]').click()
+  await T.click('button[aria-label="تفاعل ⭐"]')
+  await T.locator('[id^="m-"]:has-text("أحسنت يا أحمد")').first().locator('button:has-text("👍")').waitFor({ timeout: 12000 })
+  await A.locator('[id^="m-"]:has-text("التوكل هو الاعتماد")').first().locator('button:has-text("⭐")').waitFor({ timeout: 12000 })
+  step('التفاعلات السريعة تصل للطرفين', true)
+
+  // إخفاء الإجابات: محمد لا يرى إجابة أحمد حتى يكشفها المعلم
+  await T.click('button[aria-label="إخفاء إجابات الطلاب عن بعضهم"]')
+  await M.getByText('إجابات زملائك مخفية').waitFor({ timeout: 12000 })
+  await M.waitForFunction(() => !document.body.innerText.includes('التوكل هو الاعتماد على الله مع'), null, { timeout: 12000 })
+  const ownVisible = await M.getByText('هذه صورة من دفتري').count()
+  await M.screenshot({ path: `${OUT}/17-hidden-answers.png` })
+  await T.click('button[aria-label="كشف الإجابات للجميع"]')
+  await M.getByText('التوكل هو الاعتماد على الله').first().waitFor({ timeout: 12000 })
+  step('إخفاء الإجابات ثم كشفها', ownVisible > 0)
+
+  // رسالة صوتية من محمد
+  await M.click('button[aria-label="تسجيل رسالة صوتية"]'); await M.getByText('جارٍ التسجيل').waitFor()
+  await M.waitForTimeout(1600); await M.click('button:has-text("إيقاف")')
+  await M.locator('audio').first().waitFor(); await M.click('button[aria-label="إرسال"]')
+  await T.waitForFunction(() => document.querySelectorAll('[id^="m-"] audio').length > 0, null, { timeout: 12000 })
+  step('رسالة صوتية تُسجَّل وتصل للمعلم', db.msgs.some((m) => m.audio_path && db.objects.has(m.audio_path)))
+
+  // لوحة الشرف
+  await A.click('button[aria-label="لوحة الشرف"]'); await A.locator('[role=dialog] li:has-text("أحمد")').waitFor()
+  await A.screenshot({ path: `${OUT}/18-leaderboard-iphone.png` }); await A.click('[role=dialog] button[aria-label="إغلاق"]')
+  await T.click('button:has-text("لوحة الشرف")'); await T.locator('aside li:has-text("أحمد")').waitFor()
+  step('لوحة الشرف تظهر للطالب والمعلم', boardFor(db.convs[0].id)[0].name === 'أحمد')
+  await T.click('aside button[aria-label="إغلاق"]')
+
+  // حفظ المحادثة كقالب وظهور الأسئلة الجاهزة
+  await T.click('button[aria-label="المزيد"]'); await T.click('button:has-text("حفظ هذه المحادثة كقالب")')
+  await T.click('button:has-text("أسئلة جاهزة")'); await T.locator('aside:has-text("هل التوكل يعني ترك الأسباب؟")').waitFor({ timeout: 8000 })
+  step('قوالب الدروس: حفظ المحادثة كقالب وإعادة استخدام أسئلتها', db.templates.length === 1)
+  await T.screenshot({ path: `${OUT}/19-ready-questions.png` })
+  await T.click('aside button[aria-label="إغلاق"]')
 
   // البحث داخل الرسائل
   await T.click('button[aria-label="بحث في الرسائل"]'); await T.fill('input[placeholder^="ابحث في الرسائل"]', 'دفتري')

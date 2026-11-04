@@ -6,7 +6,7 @@ import { supabase, BUCKET, errorMessage } from '../lib/supabase'
 import { exportExcel } from '../lib/exporter'
 import { fmtDateTime, fmtDate, ACCESS_LABEL } from '../lib/format'
 import { FullLoader, toast } from '../components/ui'
-import type { ConversationRow, MessageRow, ParticipantRow } from '../lib/types'
+import type { ConversationRow, MessageRow, ParticipantRow, VoteRow } from '../lib/types'
 
 /** صفحة مهيأة للطباعة والحفظ كملف PDF (تدعم العربية والصور بدقة كاملة) */
 export default function ExportPrint() {
@@ -15,14 +15,15 @@ export default function ExportPrint() {
   const [conv, setConv] = useState<ConversationRow | null>(null)
   const [msgs, setMsgs] = useState<MessageRow[]>([])
   const [parts, setParts] = useState<ParticipantRow[]>([])
+  const [votes, setVotes] = useState<VoteRow[]>([])
   const [urls, setUrls] = useState<Map<string, string>>(new Map())
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
     (async () => {
       try {
-        const [c, m, p] = await Promise.all([api.getConversation(id), api.messagesSince(id, null), api.participants(id)])
-        setConv(c); setMsgs(m.filter((x) => !x.deleted_at)); setParts(p)
+        const [c, m, p, v] = await Promise.all([api.getConversation(id), api.messagesSince(id, null), api.participants(id), api.votes(id).catch(() => [])])
+        setConv(c); setMsgs(m.filter((x) => !x.deleted_at)); setParts(p); setVotes(v)
         const paths = m.filter((x) => x.image_path && !x.deleted_at).map((x) => x.image_path!)
         if (paths.length) {
           const { data } = await supabase.storage.from(BUCKET).createSignedUrls(paths, 3600)
@@ -81,7 +82,16 @@ export default function ExportPrint() {
                     <span className="ms-auto text-xs text-navy-500">{fmtDateTime(m.created_at)}</span>
                   </div>
                   {rep && <div className="mb-1 border-s-4 border-navy-200 ps-2 text-xs text-navy-500">ردًا على {rep.sender_name}: {rep.body?.slice(0, 100) || '📷 صورة'}</div>}
-                  {m.body && <p className="whitespace-pre-wrap leading-7">{m.body}</p>}
+                  {m.body && <p className="whitespace-pre-wrap leading-7">{m.kind === 'poll' && '📊 '}{m.body}</p>}
+                  {m.kind === 'poll' && m.poll_options && (
+                    <ul className="mt-1 space-y-0.5 text-sm">
+                      {m.poll_options.map((o, i) => {
+                        const vs = votes.filter((v) => v.message_id === m.id && v.option === i)
+                        return <li key={i}>• {o}: <b>{vs.length}</b> {vs.length > 0 && <span className="text-xs text-navy-500">({vs.map((v) => parts.find((p) => p.id === v.participant_id)?.name || 'طالب').join('، ')})</span>}</li>
+                      })}
+                    </ul>
+                  )}
+                  {m.audio_path && <p className="text-sm text-navy-500">🎤 رسالة صوتية{m.audio_secs ? ` (${m.audio_secs} ث)` : ''}</p>}
                   {m.image_path && urls.get(m.image_path) && <img src={urls.get(m.image_path)} alt={`صورة من ${m.sender_name}`} className="mt-2 max-h-[420px] max-w-full rounded-lg border border-navy-100" />}
                 </div>
               )

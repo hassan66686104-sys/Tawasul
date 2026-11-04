@@ -1,11 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Users, KeyRound, Globe2, ArrowLeft } from 'lucide-react'
+import { Users, KeyRound, Globe2, ArrowLeft, BookCopy } from 'lucide-react'
 import { Modal, Spinner, toast } from './ui'
 import { SharePanel } from './SharePanel'
-import { addRoster, createConversation } from '../lib/teacherApi'
+import { addRoster, createConversation, templates } from '../lib/teacherApi'
 import { errorMessage } from '../lib/supabase'
-import type { AccessMode, ConversationRow } from '../lib/types'
+import type { AccessMode, ConversationRow, TemplateRow } from '../lib/types'
 
 export const GRADES = ['الصف الأول', 'الصف الثاني', 'الصف الثالث', 'الصف الرابع', 'الصف الخامس', 'الصف السادس',
   'الأول المتوسط', 'الثاني المتوسط', 'الثالث المتوسط', 'الأول الثانوي', 'الثاني الثانوي', 'الثالث الثانوي']
@@ -23,9 +23,17 @@ export function NewConversationModal({ open, onClose, onCreated }: { open: boole
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [created, setCreated] = useState<ConversationRow | null>(null)
+  const [tpls, setTpls] = useState<TemplateRow[]>([])
+  const [tplId, setTplId] = useState('')
+  useEffect(() => { if (open) templates().then(setTpls).catch(() => setTpls([])) }, [open])
+  const pickTemplate = (id: string) => {
+    setTplId(id)
+    const t = tpls.find((x) => x.id === id)
+    if (t) { setTitle(t.title); setDesc(t.description || ''); setGrade(t.grade || '') }
+  }
 
   const reset = () => {
-    setTitle(''); setDesc(''); setGrade(''); setOpenToAll(true); setRestrict('code'); setNames(''); setHasExpiry(false); setExpiry(''); setErr(null); setCreated(null)
+    setTitle(''); setDesc(''); setGrade(''); setOpenToAll(true); setRestrict('code'); setNames(''); setHasExpiry(false); setExpiry(''); setErr(null); setCreated(null); setTplId('')
   }
   const close = () => { reset(); onClose() }
 
@@ -46,7 +54,7 @@ export function NewConversationModal({ open, onClose, onCreated }: { open: boole
     try {
       const c = await createConversation({
         title: title.trim(), description: desc.trim() || null, grade: grade || null,
-        access_mode: openToAll ? 'open' : restrict, expires_at,
+        access_mode: openToAll ? 'open' : restrict, expires_at, template_id: tplId || null,
       })
       if (!openToAll) await addRoster(c.id, nameList)
       setCreated(c)
@@ -79,6 +87,15 @@ export function NewConversationModal({ open, onClose, onCreated }: { open: boole
     <Modal open={open} onClose={close} title="إنشاء محادثة جديدة"
       footer={<div className="pb-2"><button form="newconv" className="btn-primary w-full py-3 text-lg" disabled={busy}>{busy && <Spinner className="h-5 w-5" />} إنشاء المحادثة</button></div>}>
       <form id="newconv" onSubmit={submit} className="space-y-4">
+        {tpls.length > 0 && (
+          <div className="rounded-2xl bg-gold-50 p-3">
+            <label className="label flex items-center gap-1.5" htmlFor="tp"><BookCopy className="h-4 w-4 text-gold-600" /> ابدأ من قالب (اختياري)</label>
+            <select id="tp" className="input" value={tplId} onChange={(e) => pickTemplate(e.target.value)}>
+              <option value="">— بدون قالب —</option>
+              {tpls.map((t) => <option key={t.id} value={t.id}>{t.title} ({t.items.length} سؤال)</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <label className="label" htmlFor="t">اسم الدرس *</label>
           <input id="t" className="input" placeholder="مثال: التوكل على الله" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} autoFocus />

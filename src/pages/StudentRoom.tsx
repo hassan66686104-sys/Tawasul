@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { LogIn, User, KeyRound, BookOpen, GraduationCap, Users, LogOut, Wifi, WifiOff, MessageCircle, AlertTriangle } from 'lucide-react'
+import { LogIn, User, KeyRound, BookOpen, GraduationCap, Users, LogOut, Wifi, WifiOff, MessageCircle, AlertTriangle, Trophy, EyeOff } from 'lucide-react'
 import { studentApi, studentStore, PublicConv } from '../lib/studentApi'
 import { ChatView, MsgAction } from '../components/ChatView'
 import { Composer, SendPayload } from '../components/Composer'
 import { Lightbox, LightboxItem } from '../components/Lightbox'
-import { confirmDialog, Empty, FullLoader, Logo, Spinner, toast } from '../components/ui'
+import { confirmDialog, Empty, FullLoader, Logo, Modal, Spinner, toast } from '../components/ui'
+import { BoardList } from '../components/Extras'
 import { useConversationSync } from '../lib/sync'
-import { uploadImage } from '../lib/media'
+import { uploadAudio, uploadImage } from '../lib/media'
 import { cleanName, uuid } from '../lib/format'
-import type { ConvInfo, Msg, StudentSession } from '../lib/types'
+import type { BoardRow, ConvInfo, Msg, StudentSession } from '../lib/types'
 
 export default function StudentRoom() {
   const { slug = '' } = useParams()
@@ -127,7 +128,10 @@ function StudentChat({ session, slug, onLeave }: { session: StudentSession; slug
   const [loaded, setLoaded] = useState(false)
   const [replyTo, setReplyTo] = useState<Msg | null>(null)
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null)
+  const [boardOpen, setBoardOpen] = useState(false)
+  const [board, setBoard] = useState<BoardRow[] | null>(null)
   const since = useRef<string | null>(null)
+  const hidden = useRef<boolean | undefined>(session.conversation.hide_answers)
   const inflight = useRef(false)
   const again = useRef(false)
   const leaveRef = useRef(onLeave)
@@ -143,6 +147,18 @@ function StudentChat({ session, slug, onLeave }: { session: StudentSession; slug
     inflight.current = true
     try {
       const f = await studentApi.feed(token, since.current)
+      if (since.current && f.conversation.hide_answers !== hidden.current) {
+        // تغيّر وضع إخفاء الإجابات: إعادة تحميل كامل لإظهار/إخفاء رسائل الزملاء
+        hidden.current = f.conversation.hide_answers
+        since.current = null
+        const full = await studentApi.feed(token, null)
+        setMap(new Map(full.messages.map((m) => [m.id, m])))
+        setConv((c) => ({ ...c, ...full.conversation }))
+        since.current = new Date(new Date(full.server_time).getTime() - 5000).toISOString()
+        toast.ok(full.conversation.hide_answers ? 'أخفى المعلم الإجابات: تكتب إجابتك دون أن ترى إجابات زملائك' : 'كشف المعلم الإجابات، يمكنك رؤية إجابات زملائك الآن')
+        return
+      }
+      hidden.current = f.conversation.hide_answers
       merge(f.messages)
       setConv((c) => ({ ...c, ...f.conversation }))
       setMe((m) => ({ ...m, is_blocked: f.me.is_blocked }))
@@ -165,14 +181,30 @@ function StudentChat({ session, slug, onLeave }: { session: StudentSession; slug
     : conv.status === 'expired' ? 'انتهى وقت المحادثة'
     : conv.status === 'archived' ? 'المحادثة مؤرشفة' : null
 
-  const send = async ({ text, image, replyTo: rt }: SendPayload) => {
+  const send = async ({ text, image, replyTo: rt, audio }: SendPayload) => {
     let path: string | null = null
+    let voice: { path: string; secs: number } | null = null
+    const base = `${session.conversation.secret_key}/${session.participant.upload_key}`
     if (image) {
-      path = `${session.conversation.secret_key}/${session.participant.upload_key}/${uuid()}.${image.ext}`
+      path = `${base}/${uuid()}.${image.ext}`
       await uploadImage(path, image.blob, image.type)
     }
-    const m = await studentApi.send(token, text || null, path, rt?.id || null)
+    if (audio) {
+      voice = { path: `${base}/${uuid()}.${audio.ext}`, secs: audio.secs }
+      await uploadAudio(voice.path, audio.blob, audio.type)
+    }
+    const m = await studentApi.send(token, text || null, path, rt?.id || null, voice)
     merge([m])
+  }
+  const onReact = async (m: Msg, emoji: string) => {
+    try { merge([await studentApi.react(token, m.id, emoji)]) } catch (e) { toast.err((e as Error).message) }
+  }
+  const onVote = async (m: Msg, option: number) => {
+    try { merge([await studentApi.vote(token, m.id, option)]) } catch (e) { toast.err((e as Error).message) }
+  }
+  const openBoard = async () => {
+    setBoardOpen(true); setBoard(null)
+    try { setBoard(await studentApi.board(token)) } catch (e) { toast.err((e as Error).message); setBoard([]) }
   }
 
   const onAction = async (a: MsgAction, m: Msg) => {
@@ -206,16 +238,21 @@ function StudentChat({ session, slug, onLeave }: { session: StudentSession; slug
             </div>
           </div>
           <div className="hidden text-end text-xs sm:block"><div className="text-navy-300">دخلت باسم</div><div className="font-bold">{me.name}</div></div>
+          <button className="icon-btn text-gold-200 hover:bg-white/10" onClick={openBoard} aria-label="لوحة الشرف" title="لوحة الشرف"><Trophy className="h-5 w-5" /></button>
           <button className="icon-btn text-white hover:bg-white/10" onClick={leave} aria-label="خروج" title="خروج"><LogOut className="h-5 w-5" /></button>
         </div>
       </header>
       {!loaded ? <FullLoader /> : (
-        <ChatView messages={messages} viewer="student" onAction={onAction}
+        <ChatView messages={messages} viewer="student" onAction={onAction} onReact={me.is_blocked ? undefined : onReact} onVote={onVote} canVote={!disabled}
+          banner={conv.hide_answers ? <div className="flex items-center gap-2 border-b border-gold-200 bg-gold-50 px-4 py-2 text-sm font-semibold text-navy-800"><EyeOff className="h-4 w-4 shrink-0 text-gold-600" /> اكتب إجابتك بنفسك؛ إجابات زملائك مخفية حتى يكشفها المعلم.</div> : null}
           onOpenImage={(m) => m.image_path && setLightbox({ path: m.image_path, name: m.name, at: m.created_at })}
           emptyState={<Empty icon={<MessageCircle className="h-8 w-8" />} title={`أهلًا ${me.name} 👋`} text="لا توجد رسائل بعد. ابدأ بكتابة رسالتك أو أرسل صورة." />} />
       )}
       <Composer onSend={send} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} disabledReason={disabled} />
       <Lightbox item={lightbox} onClose={() => setLightbox(null)} />
+      <Modal open={boardOpen} onClose={() => setBoardOpen(false)} title="لوحة الشرف 🏆">
+        <div className="pb-3"><BoardList rows={board} highlight={me.id} /></div>
+      </Modal>
     </div>
   )
 }

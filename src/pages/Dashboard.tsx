@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Search, Users, MessageCircle, MoreVertical, Lock, Unlock, Archive, ArchiveRestore, Trash2, Share2, LogOut, Sparkles, Eraser, CalendarDays, ShieldAlert, UserCog, Download, Inbox } from 'lucide-react'
+import { Plus, Search, Users, MessageCircle, MoreVertical, Lock, Unlock, Archive, ArchiveRestore, Trash2, Share2, LogOut, Sparkles, Eraser, CalendarDays, ShieldAlert, UserCog, Download, Inbox, BookCopy } from 'lucide-react'
 import { supabase, errorMessage } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { clearDemo, dashboard, deleteConversation, seedDemo, updateConversation } from '../lib/teacherApi'
@@ -9,6 +9,7 @@ import { fmtDate, relative } from '../lib/format'
 import { confirmDialog, Empty, FullLoader, Logo, Modal, StatusBadge, toast } from '../components/ui'
 import { NewConversationModal, ProfileModal } from '../components/NewConversation'
 import { SharePanel } from '../components/SharePanel'
+import { TemplatesModal } from '../components/Templates'
 import { useInstallPrompt } from '../lib/pwa'
 
 export default function Dashboard() {
@@ -21,6 +22,7 @@ export default function Dashboard() {
   const [share, setShare] = useState<DashboardRow | null>(null)
   const [menu, setMenu] = useState<DashboardRow | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
+  const [tplOpen, setTplOpen] = useState(false)
   const install = useInstallPrompt()
 
   const load = useCallback(async () => {
@@ -95,7 +97,10 @@ export default function Dashboard() {
             <h1 className="text-2xl font-extrabold">مرحبًا {teacherName || ''} 👋</h1>
             <p className="text-sm text-navy-500">{totalUnread > 0 ? `لديك ${totalUnread} رسالة جديدة غير مقروءة` : 'جميع المحادثات محفوظة في حسابك'}</p>
           </div>
-          <button className="btn-gold px-6 py-3.5 text-lg" onClick={() => setNewOpen(true)}><Plus className="h-6 w-6" /> إنشاء محادثة جديدة</button>
+          <div className="flex gap-2">
+            <button className="btn-outline px-4 py-3.5" onClick={() => setTplOpen(true)}><BookCopy className="h-5 w-5" /> القوالب</button>
+            <button className="btn-gold flex-1 px-6 py-3.5 text-lg" onClick={() => setNewOpen(true)}><Plus className="h-6 w-6" /> إنشاء محادثة جديدة</button>
+          </div>
         </div>
 
         <div className="flex flex-col gap-3 sm:flex-row">
@@ -160,6 +165,7 @@ export default function Dashboard() {
         </div>
       </main>
 
+      <TemplatesModal open={tplOpen} onClose={() => setTplOpen(false)} />
       <NewConversationModal open={newOpen} onClose={() => setNewOpen(false)} onCreated={load} />
       <Modal open={!!share} onClose={() => setShare(null)} title={share ? `مشاركة «${share.title}»` : ''}>
         {share && <div className="pb-3"><SharePanel slug={share.slug} title={share.title} /></div>}

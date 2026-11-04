@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import type { ConvInfo, Msg, StudentSession } from './types'
+import type { BoardRow, ConvInfo, Msg, StudentSession } from './types'
 
 function rpcError(e: { message?: string; code?: string } | null): Error {
   const err = new Error(e?.message || 'حدث خطأ، حاول مجددًا') as Error & { code?: string }
@@ -21,8 +21,11 @@ export const studentApi = {
   resume: (token: string) => call<StudentSession>('tw_resume', { p_token: token }),
   feed: (token: string, since: string | null) =>
     call<{ server_time: string; conversation: ConvInfo; me: { id: string; name: string; is_blocked: boolean }; messages: Msg[] }>('tw_feed', { p_token: token, p_since: since }),
-  send: (token: string, body: string | null, imagePath: string | null, replyTo: string | null) =>
-    call<Msg>('tw_send', { p_token: token, p_body: body, p_image_path: imagePath, p_reply_to: replyTo }),
+  send: (token: string, body: string | null, imagePath: string | null, replyTo: string | null, audio?: { path: string; secs: number } | null) =>
+    call<Msg>('tw_send', { p_token: token, p_body: body, p_image_path: imagePath, p_reply_to: replyTo, p_audio_path: audio?.path || null, p_audio_secs: audio?.secs ?? null }),
+  vote: (token: string, id: string, option: number) => call<Msg>('tw_vote', { p_token: token, p_message_id: id, p_option: option }),
+  react: (token: string, id: string, emoji: string) => call<Msg>('tw_react', { p_token: token, p_message_id: id, p_emoji: emoji }),
+  board: (token: string) => call<BoardRow[]>('tw_board', { p_token: token }),
   deleteOwn: (token: string, id: string) => call<void>('tw_delete_own', { p_token: token, p_message_id: id }),
   report: (token: string, id: string, reason?: string) => call<void>('tw_report', { p_token: token, p_message_id: id, p_reason: reason || null }),
 }

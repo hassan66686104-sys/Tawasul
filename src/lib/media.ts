@@ -65,3 +65,14 @@ export async function uploadImage(path: string, blob: Blob, contentType: string)
     throw new Error('تعذّر رفع الصورة، حاول مجددًا')
   }
 }
+
+export async function uploadAudio(path: string, blob: Blob, contentType: string) {
+  const { error } = await supabase.storage.from(BUCKET).upload(path, blob, { contentType, upsert: false, cacheControl: '31536000' })
+  if (error) {
+    const m = error.message || ''
+    if (/row-level security|Unauthorized|403/i.test(m)) throw new Error('لا يمكن رفع التسجيل: المحادثة مغلقة أو انتهت جلستك')
+    if (/mime|type/i.test(m)) throw new Error('صيغة التسجيل غير مدعومة على هذا الجهاز')
+    if (/size|large/i.test(m)) throw new Error('التسجيل أطول من المسموح')
+    throw new Error('تعذّر رفع التسجيل، حاول مجددًا')
+  }
+}

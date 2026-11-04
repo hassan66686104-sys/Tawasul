@@ -4,6 +4,7 @@ import type { Msg } from '../lib/types'
 import { dayLabel, fmtTime } from '../lib/format'
 import { signedUrl, cachedUrl } from '../lib/media'
 import { Modal } from './ui'
+import { PollCard, QuickReactions, ReactionBar, SignedAudio } from './Extras'
 
 export type MsgAction = 'reply' | 'pin' | 'unpin' | 'feature' | 'unfeature' | 'delete' | 'report' | 'download'
 
@@ -37,10 +38,14 @@ function linkify(text: string, q?: string) {
     : <Fragment key={i}>{highlight(p, q)}</Fragment>)
 }
 
-export function ChatView({ messages, viewer, onAction, onOpenImage, unreadAfter, query, emptyState, canAct = true }: {
+export function ChatView({ messages, viewer, onAction, onOpenImage, unreadAfter, query, emptyState, canAct = true, onReact, onVote, canVote = true, banner }: {
   messages: Msg[]
   viewer: 'teacher' | 'student'
   onAction: (a: MsgAction, m: Msg) => void
+  onReact?: (m: Msg, emoji: string) => void
+  onVote?: (m: Msg, option: number) => Promise<void>
+  canVote?: boolean
+  banner?: React.ReactNode
   onOpenImage: (m: Msg) => void
   unreadAfter?: string | null
   query?: string
@@ -112,10 +117,11 @@ export function ChatView({ messages, viewer, onAction, onOpenImage, unreadAfter,
           <Pin className="h-4 w-4 shrink-0 rotate-45 text-gold-600" />
           <div className="min-w-0 flex-1">
             <div className="text-xs font-bold text-gold-600">رسالة مثبّتة {pinned.length > 1 && `(${Math.min(pinIdx, pinned.length - 1) + 1}/${pinned.length})`}</div>
-            <div className="truncate text-sm text-navy-800">{currentPin.body || '📷 صورة'}</div>
+            <div className="truncate text-sm text-navy-800">{currentPin.body || (currentPin.audio_path ? '🎤 رسالة صوتية' : '📷 صورة')}</div>
           </div>
         </button>
       )}
+      {banner}
       <div ref={scroller} onScroll={onScroll} className="chat-bg scrollbar-thin flex-1 overflow-y-auto overscroll-contain px-2 py-3 sm:px-6">
         {!messages.length && emptyState}
         <div className="mx-auto flex max-w-3xl flex-col gap-1">
@@ -133,7 +139,8 @@ export function ChatView({ messages, viewer, onAction, onOpenImage, unreadAfter,
                   <div className="my-2 flex items-center gap-2 text-xs font-bold text-gold-600"><span className="h-px flex-1 bg-gold-300" />رسائل جديدة<span className="h-px flex-1 bg-gold-300" /></div>
                 )}
                 <Bubble m={m} viewer={viewer} grouped={!!grouped} query={query} flash={flashId === m.id}
-                  onMenu={() => canAct && !m.deleted && !m.pending && setMenuFor(m)} onOpenImage={() => onOpenImage(m)} onJump={jumpTo} />
+                  onMenu={() => canAct && !m.deleted && !m.pending && setMenuFor(m)} onOpenImage={() => onOpenImage(m)} onJump={jumpTo}
+                  onReact={canAct ? onReact : undefined} onVote={onVote} canVote={canVote} />
               </Fragment>
             )
           })}
@@ -145,14 +152,16 @@ export function ChatView({ messages, viewer, onAction, onOpenImage, unreadAfter,
           {newCount > 0 ? `${newCount} ${newCount === 1 ? 'رسالة جديدة' : 'رسائل جديدة'}` : 'الأحدث'}
         </button>
       )}
-      <ActionSheet m={menuFor} viewer={viewer} onClose={() => setMenuFor(null)} onAction={(a, m) => { setMenuFor(null); onAction(a, m) }} />
+      <ActionSheet m={menuFor} viewer={viewer} onClose={() => setMenuFor(null)} onAction={(a, m) => { setMenuFor(null); onAction(a, m) }}
+        onReact={onReact ? (m, e) => { setMenuFor(null); onReact(m, e) } : undefined} />
     </div>
   )
 }
 
-function Bubble({ m, viewer, grouped, query, flash, onMenu, onOpenImage, onJump }: {
+function Bubble({ m, viewer, grouped, query, flash, onMenu, onOpenImage, onJump, onReact, onVote, canVote }: {
   m: Msg; viewer: 'teacher' | 'student'; grouped: boolean; query?: string; flash: boolean
   onMenu: () => void; onOpenImage: () => void; onJump: (id: string) => void
+  onReact?: (m: Msg, e: string) => void; onVote?: (m: Msg, i: number) => Promise<void>; canVote: boolean
 }) {
   const isTeacher = m.role === 'teacher'
   const mine = !!m.mine
@@ -174,7 +183,10 @@ function Bubble({ m, viewer, grouped, query, flash, onMenu, onOpenImage, onJump 
             <span className="ms-auto font-normal text-navy-400">{fmtTime(m.created_at)}</span>
           </div>
           {m.image_path && <SignedImage path={m.image_path} alt="صورة الإعلان" onClick={onOpenImage} className="mb-2 max-h-80 w-full rounded-xl object-cover" />}
+          {m.audio_path && <SignedAudio path={m.audio_path} secs={m.audio_secs} />}
           {m.body && <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-navy-900" dir="auto">{linkify(m.body, query)}</p>}
+          {m.poll && <div onClick={(e) => e.stopPropagation()}><PollCard m={m} viewer={viewer} onVote={onVote} canVote={canVote} /></div>}
+          <div onClick={(e) => e.stopPropagation()}><ReactionBar m={m} viewer={viewer} onReact={onReact} /></div>
           {viewer === 'teacher' && !!m.report_count && <ReportTag n={m.report_count} />}
         </div>
       </div>
@@ -205,7 +217,10 @@ function Bubble({ m, viewer, grouped, query, flash, onMenu, onOpenImage, onJump 
             <SignedImage path={m.image_path} alt={`صورة من ${m.name}`} onClick={onOpenImage}
               className="mb-1 h-auto max-h-72 w-64 max-w-full rounded-xl object-cover sm:w-72" />
           )}
+          {m.audio_path && <SignedAudio path={m.audio_path} secs={m.audio_secs} dark={isTeacher} />}
           {m.body && <p className="whitespace-pre-wrap break-words text-[15px] leading-7" dir="auto">{linkify(m.body, query)}</p>}
+          {m.poll && <PollCard m={m} viewer={viewer} onVote={onVote} canVote={canVote} />}
+          <ReactionBar m={m} viewer={viewer} onReact={onReact} dark={isTeacher} />
           <div className={`mt-0.5 flex items-center justify-end gap-1.5 text-[11px] ${isTeacher ? 'text-white/60' : 'text-navy-400'}`}>
             {m.is_pinned && <Pin className="h-3 w-3 rotate-45" />}
             {m.pending ? 'جارٍ الإرسال…' : fmtTime(m.created_at)}
@@ -227,7 +242,7 @@ function ReportTag({ n }: { n: number }) {
   return <div className="mt-1 flex items-center gap-1 rounded-lg bg-red-50 px-2 py-0.5 text-[11px] font-bold text-red-600"><ShieldAlert className="h-3.5 w-3.5" /> أبلغ عنها {n} {n === 1 ? 'طالب' : 'طلاب'}</div>
 }
 
-function ActionSheet({ m, viewer, onClose, onAction }: { m: Msg | null; viewer: 'teacher' | 'student'; onClose: () => void; onAction: (a: MsgAction, m: Msg) => void }) {
+function ActionSheet({ m, viewer, onClose, onAction, onReact }: { m: Msg | null; viewer: 'teacher' | 'student'; onClose: () => void; onAction: (a: MsgAction, m: Msg) => void; onReact?: (m: Msg, e: string) => void }) {
   if (!m) return null
   const items: { a: MsgAction; label: string; icon: React.ReactNode; danger?: boolean }[] = [{ a: 'reply', label: 'رد على الرسالة', icon: <CornerDownLeft className="h-5 w-5" /> }]
   if (viewer === 'teacher') {
@@ -241,7 +256,8 @@ function ActionSheet({ m, viewer, onClose, onAction }: { m: Msg | null; viewer: 
   }
   return (
     <Modal open onClose={onClose} title={<span className="flex items-center gap-2"><Reply className="h-5 w-5 text-navy-400" /> {m.name}</span>}>
-      <p className="mb-3 line-clamp-3 rounded-xl bg-navy-50 p-3 text-sm text-navy-700" dir="auto">{m.body || '📷 صورة'}</p>
+      {onReact && <QuickReactions m={m} viewer={viewer} onPick={(e) => onReact(m, e)} />}
+      <p className="mb-3 line-clamp-3 rounded-xl bg-navy-50 p-3 text-sm text-navy-700" dir="auto">{m.body || (m.audio_path ? '🎤 رسالة صوتية' : '📷 صورة')}</p>
       <div className="flex flex-col pb-2">
         {items.map((it) => (
           <button key={it.a} onClick={() => onAction(it.a, m)}
