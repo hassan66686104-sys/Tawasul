@@ -1,8 +1,7 @@
 name: نشر الموقع على GitHub Pages
 
+# الموقع يُنشر حاليًا من فرع gh-pages؛ هذا المسار يدوي فقط (يتطلب Source = GitHub Actions)
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
